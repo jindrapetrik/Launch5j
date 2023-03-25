@@ -1016,7 +1016,7 @@ static BOOL detect_java_runtime_scan_liberica(const wchar_t *const key_name, con
     return TRUE;
 }
 
-static const wchar_t *detect_java_runtime(const DWORD required_bitness, const ULONGLONG required_ver_min, const ULONGLONG required_ver_max)
+static const wchar_t *detect_java_runtime(const DWORD required_bitness, const ULONGLONG required_ver_min, const ULONGLONG required_ver_max, DWORD *out_bitness)
 {
     typedef struct { UINT mode; const wchar_t *path; } reg_key_t;
     static const reg_key_t REG_KEYS[] =
@@ -1065,10 +1065,11 @@ static const wchar_t *detect_java_runtime(const DWORD required_bitness, const UL
 
     if (((required_bitness == 0U) || (bitness == required_bitness)) && (version >= required_ver_min) && (version < required_ver_max) && runtime_path)
     {
+        *out_bitness = bitness;
         return runtime_path;
     }
 
-    free((void*)runtime_path);
+    free((void*)runtime_path);        
     return NULL;
 }
 
@@ -1642,12 +1643,15 @@ static int launch5j_main(const HINSTANCE hinstance, const wchar_t *const cmd_lin
     }
 #endif
 
+
+    DWORD java_bitness = 0L;
+
     // Find the Java runtime executable path (possibly from the registry)
 #if L5J_DETECT_REGISTRY
     java_required_ver_min = load_java_version(hinstance, ID_STR_JAVAMIN, (8ull << 48));
     java_required_ver_max = load_java_version(hinstance, ID_STR_JAVAMAX, MAXULONGLONG);
     java_required_bitness = load_java_bitness(hinstance, ID_STR_BITNESS);
-    if (!(java_runtime_path = detect_java_runtime(java_required_bitness, java_required_ver_min, java_required_ver_max)))
+    if (!(java_runtime_path = detect_java_runtime(java_required_bitness, java_required_ver_min, java_required_ver_max, &java_bitness)))
     {
         show_message(hwnd, MB_ICONERROR | MB_TOPMOST, APP_HEADING, L"Java Runtime Environment (JRE) could not be found!");
         show_jre_download_notice(hinstance, hwnd, APP_HEADING, java_required_bitness, java_required_ver_min);
@@ -1670,9 +1674,40 @@ static int launch5j_main(const HINSTANCE hinstance, const wchar_t *const cmd_lin
     // Load additional options
     jvm_extra_args = load_string(hinstance, ID_STR_JVMARGS);
     cmd_extra_args = load_string(hinstance, ID_STR_CMDARGS);
-
+    
+    const int mb = 1048576;			// 1 MB
+	const int mbLimit32 = 1500;  	// Max heap size in MB on 32-bit JREs
+    
+    /*MEMORYSTATUS m;
+	memset(&m, 0, sizeof(m));
+	GlobalMemoryStatus(&m);
+    DWORD freeMemory = m.dwAvailPhys;*/
+    
+    MEMORYSTATUSEX m;    
+    memset(&m, 0, sizeof(m));
+    m.dwLength = sizeof(m);
+    GlobalMemoryStatusEx(&m);
+    DWORDLONG freeMemory = m.ullAvailPhys;
+    
+    int percent = 100; //how many percent of memory. TODO: place this to resource config
+	int size = (long long) freeMemory * percent / (100 * mb);
+    if (java_bitness == 32L && size > mbLimit32)
+    {
+        size = mbLimit32;
+    }    
+    if (AVAILABLE(jvm_extra_args))
+    { 
+        jvm_extra_args = aswprintf(L"-Xmx%dm %s", size, jvm_extra_args);
+    }
+    else
+    {
+        jvm_extra_args = aswprintf(L"-Xmx%dm", size);
+    }
+    
+    
     // Make sure command-line was created
     command_line = build_commandline(pid, java_runtime_path, jarfile_path, jvm_extra_args, cmd_extra_args, cmd_line_args);
+        
     if (!command_line)
     {
         show_message(hwnd, MB_ICONERROR | MB_TOPMOST, APP_HEADING, L"The Java command-line could not be generated!");
